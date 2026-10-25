@@ -1,0 +1,619 @@
+---
+title: "Wizualizacje ruchu rowerowego w Gdańsku"
+author: "Maciej Otto, Laura Milczanowska, Grupa S52-12"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = FALSE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+```{r biblioteki}
+library(GGally)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(leaflet)
+library(corrplot)
+library(scales)
+library(ggridges)
+library(tidyr)
+library(sf)
+library(graphics)
+```
+
+```{r wczytanie-danych}
+load("przejazdy.RData")
+load("punkty_pomiarowe.RData")
+
+# Przygotowanie zmiennych pomocniczych
+przejazdy <- przejazdy %>%
+  mutate(
+    Data = as.Date(Data),
+    Miesiac = month(Data, label = TRUE, abbr = FALSE),
+    DzienTygodnia = wday(Data, label = TRUE, abbr = FALSE, week_start = 1),
+    Weekend = ifelse(DzienTygodnia %in% c("sobota", "niedziela"),
+                          "Weekend", "Dzień roboczy")
+  )
+
+# Zmienna pomocnicza dla wybranej stacji
+stacja_wybrana <- "Pas Nadmorski"
+
+df_punkt <- przejazdy %>%
+  filter(Stacja == stacja_wybrana)
+```
+
+---
+
+## 1. Rozkład liczby dni pomiarowych w poszczególnych punktach 
+
+### Wykres słupkowy
+
+```{r wykres-1-1, fig.height=8}
+rozklad_dni <- przejazdy %>%
+  group_by(Stacja) %>%
+  summarise(liczba_dni = n_distinct(Data)) %>%
+  arrange(liczba_dni)
+
+kolory <- colorRampPalette(c("#FF0000", "#FFFF5B", "#85CF00"))(nrow(rozklad_dni))
+
+par(mar = c(4, 12, 3, 4))  # marginesy: dół, lewo, góra, prawo
+
+bp <- barplot(
+  rozklad_dni$liczba_dni,
+  names.arg  = rozklad_dni$Stacja,
+  horiz      = TRUE,
+  las        = 1,         
+  col        = kolory,
+  border     = NA,
+  main       = "Liczba dni pomiarowych w poszczególnych punktach rowerowych w Gdańsku",
+  xlab       = "Suma dni",
+  cex.names  = 0.65,
+  cex.axis   = 0.8,
+  xlim       = c(0, max(rozklad_dni$liczba_dni) * 1.12)  
+)
+
+# Etykiety z wartościami na końcu słupków
+text(
+  x      = rozklad_dni$liczba_dni + max(rozklad_dni$liczba_dni) * 0.01,
+  y      = bp,
+  labels = rozklad_dni$liczba_dni,
+  adj    = 0,
+  cex    = 0.7
+)
+```
+
+
+### Wykres liczby dni na osi czasu
+
+```{r wykres-1-2}
+przejazdy <- przejazdy %>%
+  group_by(Stacja) %>%
+  mutate(n_dni = n_distinct(Data)) %>%
+  ungroup()
+
+dane_etykiety <- przejazdy %>%
+  group_by(Stacja) %>%
+  summarise(n_dni       = n_distinct(Data),
+            ostatnia_data = max(Data))
+
+ggplot(przejazdy, aes(x = Data, y = reorder(Stacja, n_dni))) +
+  geom_tile(aes(fill = Stacja, color = Stacja)) +
+  geom_text(data = dane_etykiety,
+            aes(x = ostatnia_data, y = Stacja, label = n_dni),
+            hjust = -0.2, size = 2.5, inherit.aes = FALSE) +
+  scale_x_date(date_breaks = "6 months",
+               date_labels = "%m.%Y",
+               expand = expansion(mult = c(0.05, 0.1))) +
+  labs(title = "Liczba pomiarów dni ruchu rowerowego w poszczególnych punktach w Gdańsku na osi czasu",
+       x = "Data",
+       y = "Punkt pomiarowy") +
+  theme_minimal() +
+  theme(axis.text.x    = element_text(angle = 45, vjust = 1, hjust = 1, size = 8),
+        axis.text.y    = element_text(size = 7),
+        legend.position = "none",
+        panel.grid.minor = element_blank())
+
+```
+
+---
+
+## 2. Rozkład liczby przejazdów dla wybranego punktu (`r stacja_wybrana`)
+
+### Histogram
+
+```{r wykres-2-1}
+ggplot(filter(przejazdy, Stacja == stacja_wybrana), aes(x = Licznik)) +
+  geom_histogram(bins = 30, fill = "#2ecc71", color = "white") +
+  theme_minimal() +
+  labs(title = paste("Rozkład dziennych przejazdów -", stacja_wybrana),
+       x = "Liczba przejazdów", y = "Częstość")
+```
+
+
+### Boxplot – dni robocze vs weekendy
+
+```{r wykres-2-3}
+ggplot(df_punkt, aes(x = Weekend, y = Licznik, fill = Weekend)) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("Dzień roboczy" = "#69b3a2", "Weekend" = "#404080")) +
+  labs(title = "Rozkład przejazdów: Dni robocze vs Weekendy",
+       subtitle = stacja_wybrana,
+       x = "Typ dnia",
+       y = "Liczba przejazdów") +
+  theme_light() +
+  theme(legend.position = "none")
+```
+
+### Rozkład miesięczny
+
+```{r wykres-2-4}
+ggplot(df_punkt, aes(x = factor(Miesiac), y = Licznik, fill = factor(Miesiac))) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_jitter(width = 0.1, alpha = 0.2, size = 0.5) +
+  labs(title = "Miesięczny rozkład natężenia ruchu",
+       subtitle = paste("Stacja:", stacja_wybrana),
+       x = "Miesiąc",
+       y = "Liczba przejazdów") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+---
+
+## 3. Porównanie punktów pod względem natężenia / rozkładu przejazdów
+
+### Boxplot – wszystkie stacje
+
+```{r wykres-3-1}
+ggplot(przejazdy, aes(x = reorder(Stacja, Licznik, median), y = Licznik)) +
+  geom_boxplot(fill = "gold", outlier.size = 0.5) +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Natężenie ruchu rowerowego w punktach pomiarowych",
+       x = "Stacja", y = "Liczba przejazdów dziennie")
+```
+
+### Wykres grzbietowy (ridge plot)
+
+```{r wykres-3-2}
+ggplot(przejazdy, aes(x = Licznik, y = reorder(Stacja, Licznik), fill = after_stat(x))) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+  scale_fill_viridis_c(name = "Liczba przejazdów", option = "C") +
+  labs(title = "Porównanie rozkładu natężenia ruchu rowerowego",
+       subtitle = "Stacje uszeregowane według natężenia ruchu",
+       x = "Dzienna liczba przejazdów", y = NULL) +
+  theme_minimal()
+```
+
+### Mediana z rozstępem międzykwartylowym
+
+```{r wykres-3-3}
+przejazdy_stat <- przejazdy %>%
+  group_by(Stacja) %>%
+  summarise(mediana = median(Licznik, na.rm = TRUE),
+            q1      = quantile(Licznik, 0.25, na.rm = TRUE),
+            q3      = quantile(Licznik, 0.75, na.rm = TRUE))
+
+ggplot(przejazdy_stat, aes(x = mediana, y = reorder(Stacja, mediana))) +
+  geom_errorbarh(aes(xmin = q1, xmax = q3), height = 0.2, color = "gray50") +
+  geom_point(color = "firebrick", size = 3) +
+  labs(title = "Mediana natężenia ruchu z rozstępem międzykwartylowym",
+       x = "Liczba przejazdów (środkowe 50% obserwacji)", y = NULL) +
+  theme_bw()
+```
+
+---
+
+## 4. Natężenie przejazdów dla `r stacja_wybrana` wg miesiąca / dnia tygodnia / weekendu
+
+### Boxplot – sezonowość i typ dnia
+
+```{r wykres-4-1}
+ggplot(filter(przejazdy, Stacja == stacja_wybrana),
+       aes(x = Miesiac, y = Licznik, fill = Weekend)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = paste("Sezonowość i typ dnia dla:", stacja_wybrana))
+```
+
+### Widok kalendarzowy
+
+```{r wykres-4-2}
+df_cal <- df_punkt %>%
+  mutate(Tydzien  = isoweek(Data),
+         DzienNum = wday(Data, week_start = 1),
+         Rok      = year(Data))
+
+ggplot(df_cal, aes(x = Tydzien, y = DzienNum, fill = Licznik)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  facet_wrap(~Miesiac, scales = "free_x", ncol = 3) +
+  scale_fill_viridis_c(option = "magma", name = "Przejazdy") +
+  scale_y_reverse(breaks = 1:7, labels = c("Pn","Wt","Śr","Czw","Pt","Sb","Nd")) +
+  labs(title = paste("Dzienny rozkład przejazdów:", stacja_wybrana),
+       subtitle = "Widok kalendarzowy pozwala zidentyfikować wpływ świąt i pogody",
+       x = "Tydzień roku", y = "") +
+  theme_minimal() +
+  theme(strip.background  = element_rect(fill = "gray90"),
+        axis.text.x       = element_blank())
+```
+
+### Wykres polarny – cykl sezonowy
+
+```{r wykres-4-3}
+ggplot(df_punkt, aes(x = factor(Miesiac), y = Licznik, group = Weekend, color = Weekend)) +
+  geom_line(stat = "summary", fun = "mean", linewidth = 1.2) +
+  coord_polar() +
+  labs(title = paste("Sezonowy cykl przejazdów:", stacja_wybrana),
+       subtitle = "Średnia liczba przejazdów w podziale na miesiące i typ dnia",
+       x = NULL, y = "Średnia liczba przejazdów") +
+  theme_minimal() +
+  scale_color_manual(values = c("Dzień roboczy" = "#2c3e50", "Weekend" = "#e74c3c"))
+```
+
+### Ridge plot – stabilność natężenia ruchu w tygodniu
+
+```{r wykres-4-4}
+ggplot(df_punkt, aes(x = Licznik, y = DzienTygodnia, fill = Weekend)) +
+  geom_density_ridges(alpha = 0.7, scale = 1.5, color = "white") +
+  scale_fill_manual(values = c("Dzień roboczy" = "skyblue", "Weekend" = "gold")) +
+  labs(title = "Stabilność natężenia ruchu w tygodniu",
+       subtitle = paste(stacja_wybrana, ": Rozkłady dla poszczególnych dni"),
+       x = "Liczba przejazdów", y = "") +
+  theme_minimal()
+```
+
+---
+
+## 5. Porównanie stacji pod względem zależności tygodniowych i sezonowych
+
+```{r top-stacje}
+top_stacje <- przejazdy %>%
+  group_by(Stacja) %>%
+  summarise(med = median(Licznik, na.rm = TRUE)) %>%
+  arrange(desc(med)) %>%
+  slice_head(n = 5) %>%
+  pull(Stacja)
+```
+
+### Heatmapa profilu tygodniowego (wszystkie stacje)
+
+```{r wykres-5-1, fig.height=9}
+heat5a <- przejazdy %>%
+  group_by(Stacja, DzienTygodnia) %>%
+  summarise(avg = mean(Licznik, na.rm = TRUE), .groups = "drop")
+
+ggplot(heat5a, aes(x = DzienTygodnia, y = reorder(Stacja, avg, median), fill = avg)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = round(avg)), size = 3, color = "white", fontface = "bold") +
+  scale_fill_gradient(low = "#d0e8f1", high = "#1a5276",
+                      name = "Średnia\nliczba\nprzejazdów") +
+  labs(title = "Profil tygodniowy natężenia ruchu – wg stacji",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x  = element_text(angle = 30, hjust = 1),
+        panel.grid   = element_blank())
+```
+
+### Sezonowość – średni ruch wg stacji i miesiąca
+
+```{r wykres-5-2}
+heat5b <- przejazdy %>%
+  filter(Stacja %in% top_stacje) %>%
+  mutate(MiesiacNum = as.integer(Miesiac)) %>%
+  group_by(Stacja, MiesiacNum, Miesiac) %>%
+  summarise(avg = mean(Licznik, na.rm = TRUE), .groups = "drop")
+
+ggplot(heat5b, aes(x = MiesiacNum, y = avg, color = Stacja, group = Stacja)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.5) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  scale_color_brewer(palette = "Set1") +
+  labs(title = "Sezonowość natężenia ruchu - wg stacji w poszczególnych miesiącach",
+       x = NULL, y = "Średnia liczba przejazdów", color = "Stacja") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+### Rozkład – dni robocze vs weekendy per stacja
+
+```{r wykres-5-3}
+przejazdy %>%
+  filter(Stacja %in% top_stacje) %>%
+  ggplot(aes(x = Licznik, y = reorder(Stacja, Licznik, median), fill = Weekend)) +
+  geom_density_ridges(alpha = 0.65, scale = 1.4, color = "white",
+                      quantile_lines = TRUE, quantiles = 2) +
+  scale_fill_manual(values = c("Dzień roboczy" = "#2980b9",
+                               "Weekend"       = "#e67e22")) +
+  labs(title = "Rozkład przejazdów: dni robocze vs weekendy",
+       subtitle = "Linia pionowa = mediana",
+       x = "Dzienna liczba przejazdów", y = NULL, fill = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "top")
+```
+
+---
+
+## 6. Zależność przejazdów od warunków pogodowych – `r stacja_wybrana`
+
+```{r dane-pogodowe}
+df_punkt_pogoda <- df_punkt %>%
+  mutate(Suma_Opadow = Opady_dzień + Opady_noc)
+```
+
+### Temperatura vs przejazdy (intensywność opadów)
+
+```{r wykres-6-1}
+ggplot(df_punkt_pogoda, aes(x = Temperatura, y = Licznik)) +
+  geom_point(aes(color = Suma_Opadow), alpha = 0.6, size = 2) +
+  geom_smooth(method = "gam", color = "red", fill = "pink") +
+  scale_color_gradient(low = "skyblue", high = "darkblue", name = "Suma opadów (mm)") +
+  labs(title = "Wpływ temperatury i opadów na ruch rowerowy",
+       subtitle = paste("Punkt pomiarowy:", stacja_wybrana),
+       x = "Temperatura [°C]",
+       y = "Dzienna liczba przejazdów") +
+  theme_minimal()
+```
+
+### Boxplot – przejazdy wg klas opadowych
+
+```{r wykres-6-2}
+df_punkt %>%
+  mutate(Suma_Opadow = Opady_dzień + Opady_noc) %>%
+  mutate(Opady_kat = cut(Suma_Opadow,
+                         breaks = c(-Inf, 0, 5, 15, Inf),
+                         labels = c("Brak (0 mm)", "Lekkie (0–5 mm)",
+                                    "Umiarkowane (5–15 mm)", "Duże (>15 mm)"))) %>%
+  ggplot(aes(x = Opady_kat, y = Licznik, fill = Opady_kat)) +
+  geom_boxplot(alpha = 0.8, outlier.size = 1, outlier.alpha = 0.4) +
+  scale_fill_manual(values = c("#f9e79f", "#aed6f1", "#2e86c1", "#1a5276")) +
+  labs(title = paste("Wpływ opadów na ruch rowerowy:", stacja_wybrana),
+       x = NULL, y = "Dzienna liczba przejazdów") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+### Wiatr vs przejazdy
+
+```{r wykres-6-3}
+ggplot(df_punkt, aes(x = Wiatr, y = Licznik)) +
+  geom_point(aes(color = Temperatura), alpha = 0.55, size = 2) +
+  geom_smooth(method = "lm", color = "firebrick", fill = "pink",
+              alpha = 0.25, linewidth = 1.1) +
+  scale_color_gradient2(low = "#2e86c1", mid = "#f4d03f", high = "#c0392b",
+                        midpoint = 10, name = "Temperatura\n[°C]") +
+  labs(title = paste("Wpływ prędkości wiatru na ruch rowerowy:", stacja_wybrana),
+       x = "Prędkość wiatru", y = "Dzienna liczba przejazdów") +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+## 7. Porównanie stacji – reakcja na pogodę
+
+### Linie trendu: temperatura i deszcz (wybrane stacje)
+
+```{r wykres-7-1}
+porownanie_pogoda <- przejazdy %>%
+  filter(Stacja %in% c("Pas Nadmorski", "Błędnik", "Grunwaldzka", "Uphagena")) %>%
+  mutate(Czy_Pada = ifelse((Opady_dzień + Opady_noc) > 0, "Deszcz", "Brak opadów"))
+
+ggplot(porownanie_pogoda, aes(x = Temperatura, y = Licznik, color = Czy_Pada)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Stacja, scales = "free_y") +
+  scale_color_manual(values = c("Brak opadów" = "orange", "Deszcz" = "blue")) +
+  labs(title = "Reakcja różnych stacji na temperaturę i deszcz",
+       subtitle = "Porównanie nachylenia linii trendu",
+       x = "Temperatura [°C]",
+       y = "Liczba przejazdów",
+       color = "Warunki") +
+  theme_light() +
+  theme(legend.position = "bottom")
+```
+
+### Reakcja stacji (top 5) – linie GAM z podziałem na deszcz
+
+```{r wykres-7-2}
+df_top <- przejazdy %>%
+  filter(Stacja %in% top_stacje) %>%
+  mutate(Suma_Opadow = Opady_dzień + Opady_noc,
+         Czy_Pada    = ifelse(Suma_Opadow > 0, "Deszcz", "Brak opadów"))
+
+ggplot(df_top, aes(x = Temperatura, y = Licznik, color = Czy_Pada)) +
+  geom_smooth(method = "gam", formula = y ~ s(x), se = FALSE, linewidth = 1.1) +
+  facet_wrap(~Stacja, scales = "free_y", ncol = 2) +
+  scale_color_manual(values = c("Brak opadów" = "#e67e22", "Deszcz" = "#2980b9")) +
+  labs(title    = "Reakcja stacji na temperaturę i deszcz",
+       x = "Temperatura [°C]", y = "Liczba przejazdów", color = "Warunki") +
+  theme_light(base_size = 11) +
+  theme(legend.position    = "bottom",
+        strip.background   = element_rect(fill = "#2c3e50"),
+        strip.text         = element_text(color = "white", face = "bold"))
+```
+
+### Korelacja Pearsona: przejazdy vs zmienne pogodowe
+
+```{r wykres-7-3}
+cor_df <- przejazdy %>%
+  mutate(Suma_Opadow = Opady_dzień + Opady_noc) %>%
+  group_by(Stacja) %>%
+  summarise(cor_temp  = cor(Licznik, Temperatura,  use = "complete.obs"),
+            cor_opady = cor(Licznik, Suma_Opadow,  use = "complete.obs"),
+            cor_wiatr = cor(Licznik, Wiatr,        use = "complete.obs"),
+            .groups   = "drop") %>%
+  pivot_longer(-Stacja, names_to = "Zmienna", values_to = "Korelacja") %>%
+  mutate(Zmienna = recode(Zmienna,
+                          cor_temp  = "Temperatura",
+                          cor_opady = "Suma opadów",
+                          cor_wiatr = "Prędkość wiatru"))
+
+ggplot(cor_df, aes(x = Zmienna, y = reorder(Stacja, Korelacja, mean),
+                   fill = Korelacja)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = round(Korelacja, 2)), size = 3.5, fontface = "bold",
+            color = ifelse(abs(cor_df$Korelacja) > 0.5, "white", "black")) +
+  scale_fill_gradient2(low = "#2980b9", mid = "white", high = "#c0392b",
+                       midpoint = 0, limits = c(-1, 1),
+                       name = "Korelacja\nPearson") +
+  labs(title = "Korelacja Pearsona między liczbą przejazdów a zmiennymi pogodowymi",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid   = element_blank(),
+        axis.text.y  = element_text(size = 7))
+```
+
+---
+
+## 8. Mapa – statystyki przejazdów w punktach pomiarowych
+
+```{r mapa, out.width="100%"}
+mapa_dane <- przejazdy %>%
+  group_by(Stacja) %>%
+  summarise(MedianaRuchu = median(Licznik, na.rm = TRUE),
+            SredniaRuchu = mean(Licznik,   na.rm = TRUE),
+            LiczbaDni    = n_distinct(Data),
+            .groups      = "drop")
+
+punkty_coords <- punkty %>%
+  rename(Stacja = stacja) %>%
+  mutate(lon = st_coordinates(.)[, 1],
+         lat = st_coordinates(.)[, 2]) %>%
+  st_drop_geometry()
+
+mapa_pelna <- mapa_dane %>%
+  inner_join(punkty_coords, by = "Stacja")
+
+pal <- colorNumeric(palette = "YlOrRd", domain = mapa_pelna$MedianaRuchu)
+
+leaflet(mapa_pelna) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addCircleMarkers(
+    lng         = ~lon,
+    lat         = ~lat,
+    radius      = ~scales::rescale(sqrt(MedianaRuchu), to = c(6, 22)),
+    fillColor   = ~pal(MedianaRuchu),
+    color       = "white",
+    weight      = 1.5,
+    fillOpacity = 0.85,
+    popup = ~paste0(
+      "<b>", Stacja, "</b><br>",
+      "Mediana: <b>", round(MedianaRuchu), "</b> przejazdów/dzień<br>",
+      "Średnia: <b>", round(SredniaRuchu), "</b> przejazdów/dzień<br>",
+      "Dni pomiarowych: <b>", LiczbaDni, "</b>"
+    )
+  ) %>%
+  addLegend(pal      = pal,
+            values   = ~MedianaRuchu,
+            title    = "Mediana<br>przejazdów/dzień",
+            position = "bottomright") %>%
+  addControl(
+    "<b>Ruch rowerowy w Gdańsku</b><br><small>Kliknij marker po szczegóły</small>",
+    position = "topright"
+  )
+```
+
+---
+
+## 9. Zależności między zmiennymi pogodowymi
+
+```{r przygotowanie-pogoda}
+pogoda_vars <- przejazdy %>%
+  select(Data, Temperatura, Wiatr, Zachmurzenie,
+         Wilgotność, Opady_dzień, Opady_noc) %>%
+  distinct() %>%
+  select(-Data)
+
+colnames(pogoda_vars) <- c("Temperatura", "Wiatr", "Zachmurzenie",
+                           "Wilgotność", "Opady dzień", "Opady noc")
+
+mac_kor <- cor(pogoda_vars, use = "complete.obs")
+```
+
+### Macierz korelacji (corrplot)
+
+```{r wykres-9-1, fig.height=7}
+corrplot(mac_kor,
+         method      = "ellipse",
+         type        = "upper",
+         order       = "hclust",
+         addCoef.col = "black",
+         number.cex  = 0.75,
+         tl.col      = "black",
+         tl.srt      = 45,
+         col         = colorRampPalette(c("#2980b9", "white", "#c0392b"))(200),
+         title       = "Korelacja między zmiennymi pogodowymi",
+         mar         = c(0, 0, 2, 0))
+```
+
+### Pairs-plot (GGally)
+
+```{r wykres-9-2, fig.height=9}
+ggpairs(pogoda_vars,
+        lower = list(continuous = wrap("points", alpha = 0.2, size = 0.5)),
+        upper = list(continuous = wrap("cor", size = 3.5)),
+        title = "Relacje między zmiennymi pogodowymi") +
+  theme_minimal()
+```
+
+### Temperatura vs Wilgotność (z opadami i zachmurzeniem)
+
+```{r wykres-9-3}
+przejazdy %>%
+  mutate(Suma_Opadow = Opady_dzień + Opady_noc) %>%
+  select(Data, Temperatura, Wilgotność, Suma_Opadow, Zachmurzenie) %>%
+  distinct() %>%
+  ggplot(aes(x = Temperatura, y = Wilgotność)) +
+  geom_point(aes(color = Suma_Opadow, size = Zachmurzenie), alpha = 0.5) +
+  geom_smooth(method = "loess", formula = y ~ x,
+              color = "black", linewidth = 0.8, se = FALSE, linetype = "dashed") +
+  scale_color_gradient(low = "#f9e79f", high = "#1a5276", name = "Opady\n") +
+  scale_size_continuous(name = "Zachmur.\n", range = c(1, 5)) +
+  labs(title = "Temperatura vs Wilgotność względna",
+       x     = "Temperatura [°C]",
+       y     = "Wilgotność względna [%]") +
+  theme_minimal(base_size = 12)
+```
+
+### Sezonowe rozkłady zmiennych pogodowych (ridge plot)
+
+```{r wykres-9-4, fig.height=8}
+miesiace_labs <- c("Sty","Lut","Mar","Kwi","Maj","Cze",
+                   "Lip","Sie","Wrz","Paź","Lis","Gru")
+
+przejazdy %>%
+  mutate(MiesiacNum = as.integer(Miesiac)) %>%
+  select(Data, MiesiacNum, Miesiac, Temperatura, Wiatr, Wilgotność) %>%
+  distinct() %>%
+  pivot_longer(c(Temperatura, Wiatr, Wilgotność),
+               names_to = "Zmienna", values_to = "Wartosc") %>%
+  ggplot(aes(x = Wartosc, y = factor(MiesiacNum, labels = miesiace_labs),
+             fill = Zmienna)) +
+  geom_density_ridges(alpha = 0.7, scale = 1.3, color = "white") +
+  facet_wrap(~Zmienna, scales = "free_x") +
+  scale_fill_manual(values = c("Temperatura" = "#c0392b",
+                               "Wiatr"       = "#2980b9",
+                               "Wilgotność"  = "#27ae60")) +
+  labs(title = "Sezonowe rozkłady zmiennych pogodowych",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position    = "none",
+        strip.background   = element_rect(fill = "#2c3e50"),
+        strip.text         = element_text(color = "white", face = "bold"))
+```
